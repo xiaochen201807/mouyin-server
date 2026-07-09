@@ -48,4 +48,5 @@ $env:QISHUI_COOKIE='...'
 
 ## GitHub Actions
 
-`.github/workflows/build.yml` builds Windows/Linux/macOS binaries for amd64/arm64 and uploads artifacts. On tags like `v0.1.0`, it also creates a GitHub Release.
+`.github/workflows/build.yml` builds Windows/Linux/macOS binaries for amd64/arm64. Normal pushes only compile and test. Because this account currently has full GitHub Actions artifact storage, the workflow intentionally does not use `actions/upload-artifact`; on tags like `v0.1.0`, it uploads binaries directly to GitHub Releases.
+
