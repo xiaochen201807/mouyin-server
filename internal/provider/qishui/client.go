@@ -8,6 +8,7 @@ import (
     "io"
     "net/http"
     "net/url"
+    "regexp"
     "strconv"
     "strings"
     "sync"
@@ -33,7 +34,13 @@ type Client struct {
 
 func NewClient(cfg Config) *Client {
     if cfg.Timeout == 0 { cfg.Timeout = 12 * time.Second }
-    return &Client{http: &http.Client{Timeout: cfg.Timeout}, cfg: cfg, cache: map[string]server.Track{}}
+    transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+    if cfg.Proxy != "" {
+        if proxyURL, err := url.Parse(cfg.Proxy); err == nil {
+            transport.Proxy = http.ProxyURL(proxyURL)
+        }
+    }
+    return &Client{http: &http.Client{Timeout: cfg.Timeout, Transport: transport}, cfg: cfg, cache: map[string]server.Track{}}
 }
 
 func (c *Client) Search(keyword string, page, pageSize int) ([]server.Track, bool, error) {
@@ -80,25 +87,46 @@ func (c *Client) Search(keyword string, page, pageSize int) ([]server.Track, boo
 
 func (c *Client) Song(id string) (*server.Track, error) {
     if strings.TrimSpace(id) == "" { return nil, errors.New("empty id") }
-    endpoint := "https://api.qishui.com/luna/h5/track?track_id=" + url.QueryEscape(id)
+    q := url.Values{}
+    q.Set("track_id", id)
+    q.Set("media_type", "track")
+    q.Set("aid", "386088")
+    q.Set("device_platform", "web")
+    q.Set("channel", "pc_web")
+    endpoint := "https://api.qishui.com/luna/pc/track_v2?" + q.Encode()
     var root map[string]interface{}
     if err := c.getJSON(context.Background(), endpoint, &root); err != nil { return nil, err }
     trackObj, _ := firstPath(root, "track").(map[string]interface{})
+    if trackObj == nil {
+        trackObj, _ = firstPath(root, "track_info").(map[string]interface{})
+    }
     tr := c.trackFromTrackObj(trackObj)
     if tr.ID == "" { tr.ID = id }
     tr.LyricsLRC = lyricToLRC(str(firstPath(root, "lyric", "content")))
-    tr.PlayURL = c.extractPlayURL(root)
-    tr.AudioURL = tr.PlayURL
+    directURL, playAuth := c.extractPlayURL(root)
+    tr.PlayURL = directURL
+    tr.AudioURL = directURL
     tr.Source = "qishui"
     tr.Type = "audio"
     tr.MediaKind = "audio"
     tr.Stats = map[string]int{"collect_count":0,"comment_count":0,"share_count":0}
     tr.Tags = []string{"qishui"}
+    tr.Extra = map[string]interface{}{"direct_url": directURL, "play_auth": playAuth}
     if cached, ok := c.getCache(id); ok {
         tr = mergeTrack(cached, tr)
     }
     c.putCache(tr)
     return &tr, nil
+}
+
+func (c *Client) Audio(id string) (string, string, error) {
+    tr, err := c.Song(id)
+    if err != nil { return "", "", err }
+    direct, _ := tr.Extra["direct_url"].(string)
+    auth, _ := tr.Extra["play_auth"].(string)
+    if direct == "" { direct = tr.AudioURL }
+    if direct == "" { return "", "", errors.New("empty audio url") }
+    return direct, auth, nil
 }
 
 func (c *Client) putCache(t server.Track) {
@@ -134,6 +162,7 @@ func mergeTrack(base, detail server.Track) server.Track {
     if detail.Stats == nil { detail.Stats = base.Stats }
     if len(detail.Tags) == 0 { detail.Tags = base.Tags }
     if detail.Description == "" { detail.Description = base.Description }
+    if detail.Extra == nil { detail.Extra = base.Extra }
     return detail
 }
 
@@ -154,33 +183,36 @@ func (c *Client) trackFromTrackObj(track map[string]interface{}) server.Track {
     }
 }
 
-func (c *Client) extractPlayURL(root map[string]interface{}) string {
-    for _, path := range [][]interface{}{{"track_player", "video_model"}, {"track_player", "url_player_info"}} {
+func (c *Client) extractPlayURL(root map[string]interface{}) (string, string) {
+    for _, path := range [][]interface{}{{"track_player", "url_player_info"}, {"track_player", "video_model"}} {
         s := str(firstPath(root, path...))
         if s == "" { continue }
         if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
             var remote map[string]interface{}
             if err := c.getJSON(context.Background(), s, &remote); err == nil {
-                if u := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "MainPlayUrl")); u != "" { return u }
-                if u := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "BackupPlayUrl")); u != "" { return u }
+                auth := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "PlayAuth"))
+                if u := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "MainPlayUrl")); u != "" { return u, auth }
+                if u := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "BackupPlayUrl")); u != "" { return u, auth }
             }
             continue
         }
         var parsed map[string]interface{}
         if json.Unmarshal([]byte(s), &parsed) == nil {
-            if u := str(firstPath(parsed, "video_list", 0, "main_url")); u != "" { return u }
-            if u := str(firstPath(parsed, "video_list", 0, "backup_url")); u != "" { return u }
-            if u := str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "MainPlayUrl")); u != "" { return u }
-            if u := str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "BackupPlayUrl")); u != "" { return u }
+            auth := str(firstPath(parsed, "video_list", 0, "encrypt_info", "spade_a"))
+            if u := str(firstPath(parsed, "video_list", 0, "main_url")); u != "" { return u, auth }
+            if u := str(firstPath(parsed, "video_list", 0, "backup_url")); u != "" { return u, auth }
+            auth = str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "PlayAuth"))
+            if u := str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "MainPlayUrl")); u != "" { return u, auth }
+            if u := str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "BackupPlayUrl")); u != "" { return u, auth }
         }
     }
-    return ""
+    return "", ""
 }
 
 func (c *Client) getJSON(ctx context.Context, endpoint string, out interface{}) error {
     req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
     if err != nil { return err }
-    req.Header.Set("User-Agent", "LunaPC/3.5.1(408871041)")
+    req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
     req.Header.Set("Content-Type", "application/json; charset=utf-8")
     req.Header.Set("Accept", "application/json,text/plain,*/*")
     if c.cfg.XHelios != "" { req.Header.Set("X-Helios", c.cfg.XHelios) }
@@ -201,4 +233,28 @@ func num(v interface{}) float64 { switch x := v.(type) { case float64: return x;
 func min(a,b int) int { if a < b { return a }; return b }
 func artists(v interface{}) []string { out:=[]string{}; for _, it := range asSlice(v) { if name := str(firstPath(it, "name")); name != "" { out = append(out, name) } }; return out }
 func coverURL(v interface{}) string { base := str(firstPath(v, "urls", 0)); uri := str(firstPath(v, "uri")); if base == "" { return "" }; if uri == "" { return base }; return base + uri + "~c5_500x500.jpg" }
-func lyricToLRC(s string) string { if s == "" { return "" }; if strings.Contains(s, "[") && strings.Contains(s, "]") { return s }; return "[00:00.00]" + strings.ReplaceAll(s, "\n", "\n[00:00.00]") }
+func lyricToLRC(s string) string {
+    if s == "" { return "" }
+    lineRe := regexp.MustCompile(`^\[(\d+),(\d+)\](.*)$`)
+    wordRe := regexp.MustCompile(`<[^>]+>`)
+    var out []string
+    for _, line := range strings.Split(s, "\n") {
+        line = strings.TrimSpace(line)
+        if line == "" { continue }
+        if m := lineRe.FindStringSubmatch(line); len(m) == 4 {
+            ms, _ := strconv.Atoi(m[1])
+            txt := strings.TrimSpace(wordRe.ReplaceAllString(m[3], ""))
+            if txt == "" { continue }
+            min := ms / 60000
+            sec := (ms / 1000) % 60
+            cs := (ms % 1000) / 10
+            out = append(out, fmt.Sprintf("[%02d:%02d.%02d]%s", min, sec, cs, txt))
+            continue
+        }
+        if strings.HasPrefix(line, "[") && strings.Contains(line, "]") {
+            out = append(out, wordRe.ReplaceAllString(line, ""))
+        }
+    }
+    if len(out) > 0 { return strings.Join(out, "\n") }
+    return "[00:00.00]" + strings.ReplaceAll(wordRe.ReplaceAllString(s, ""), "\n", "\n[00:00.00]")
+}
