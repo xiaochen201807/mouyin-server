@@ -17,7 +17,7 @@ func main() {
         XHelios: os.Getenv("QISHUI_X_HELIOS"),
         XMedusa: os.Getenv("QISHUI_X_MEDUSA"),
         Cookie:  os.Getenv("QISHUI_COOKIE"),
-        Proxy:   os.Getenv("HTTP_PROXY"),
+        Proxy:   firstNonEmpty(os.Getenv("UPSTREAM_PROXY"), os.Getenv("HTTPS_PROXY"), os.Getenv("HTTP_PROXY")),
     })
     app := server.New(upstream)
     log.Printf("mouyin-server listening on %s", addr)
@@ -27,4 +27,11 @@ func main() {
 func getenv(k, fallback string) string {
     if v := os.Getenv(k); v != "" { return v }
     return fallback
+}
+
+func firstNonEmpty(vals ...string) string {
+    for _, v := range vals {
+        if v != "" { return v }
+    }
+    return ""
 }
