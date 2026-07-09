@@ -1,11 +1,21 @@
 package server
 
 import (
+    "bytes"
+    "crypto/sha256"
     "encoding/json"
+    "fmt"
+    "io"
     "log"
     "net/http"
+    "net/url"
+    "os"
+    "path/filepath"
     "strconv"
     "strings"
+    "time"
+
+    sodalib "github.com/guohuiyuan/music-lib/soda"
 )
 
 type App struct { upstream Upstream }
@@ -25,6 +35,7 @@ func (a *App) Routes() http.Handler {
     mux.HandleFunc("/api/recommend/played", a.okPost)
     mux.HandleFunc("/api/recommend/location", a.okPost)
     mux.HandleFunc("/api/song/", a.song)
+    mux.HandleFunc("/api/proxy/audio/", a.proxyAudio)
     mux.HandleFunc("/api/discover/playlists", a.discoverPlaylists)
     mux.HandleFunc("/api/playlist/", a.playlist)
     mux.HandleFunc("/api/mv/list", a.emptyList)
@@ -84,7 +95,107 @@ func (a *App) song(w http.ResponseWriter, r *http.Request) {
     if id == "" { ok(w, nil); return }
     tr, err := a.upstream.Song(id)
     if err != nil || tr == nil { tr = &mockTracks("fallback")[0]; tr.ID = id }
+    if r.URL.Query().Get("direct") != "1" && tr.AudioURL != "" {
+        proxyURL := proxyURLForRequest(r, id)
+        tr.Extra = ensureExtra(tr.Extra)
+        tr.Extra["direct_url"] = tr.AudioURL
+        tr.PlayURL = proxyURL
+        tr.AudioURL = proxyURL
+    }
     ok(w, tr)
+}
+
+func (a *App) proxyAudio(w http.ResponseWriter, r *http.Request) {
+    id := strings.TrimPrefix(r.URL.Path, "/api/proxy/audio/")
+    if id == "" { http.Error(w, "missing id", http.StatusBadRequest); return }
+    resolver, ok := a.upstream.(AudioResolver)
+    if !ok { http.Error(w, "audio resolver unsupported", http.StatusBadGateway); return }
+    directURL, playAuth, err := resolver.Audio(id)
+    if err != nil || directURL == "" {
+        http.Error(w, "audio url unavailable", http.StatusBadGateway)
+        return
+    }
+    if playAuth != "" {
+        if data, err := cachedDecryptedAudio(r, id, directURL, playAuth); err == nil && len(data) > 0 {
+            w.Header().Set("Content-Type", "audio/mp4")
+            w.Header().Set("Accept-Ranges", "bytes")
+            w.Header().Set("Cache-Control", "public, max-age=3600")
+            http.ServeContent(w, r, id+".m4a", time.Now(), bytes.NewReader(data))
+            return
+        } else {
+            log.Printf("decrypt/cache audio failed for %s: %v; falling back to transparent proxy", id, err)
+        }
+    }
+
+    req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, directURL, nil)
+    if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+    req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+    req.Header.Set("Accept", "*/*")
+    if rng := r.Header.Get("Range"); rng != "" { req.Header.Set("Range", rng) }
+    if ref := r.Header.Get("Referer"); ref != "" { req.Header.Set("Referer", ref) }
+
+    resp, err := audioHTTPClient().Do(req)
+    if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+    defer resp.Body.Close()
+
+    for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {
+        if v := resp.Header.Get(h); v != "" { w.Header().Set(h, v) }
+    }
+    w.Header().Set("Cache-Control", "no-store")
+    w.WriteHeader(resp.StatusCode)
+    _, _ = io.Copy(w, resp.Body)
+}
+
+func cachedDecryptedAudio(r *http.Request, id, directURL, playAuth string) ([]byte, error) {
+    dir := firstNonEmpty(os.Getenv("MOUYIN_CACHE_DIR"), filepath.Join(os.TempDir(), "mouyin-server-cache"))
+    if err := os.MkdirAll(dir, 0755); err != nil { return nil, err }
+    key := fmt.Sprintf("%x", sha256.Sum256([]byte(id+"|"+directURL+"|"+playAuth)))
+    cacheFile := filepath.Join(dir, key+".m4a")
+    if data, err := os.ReadFile(cacheFile); err == nil && len(data) > 0 {
+        return data, nil
+    }
+
+    req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, directURL, nil)
+    if err != nil { return nil, err }
+    req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+    req.Header.Set("Accept", "*/*")
+    resp, err := audioHTTPClient().Do(req)
+    if err != nil { return nil, err }
+    defer resp.Body.Close()
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        return nil, fmt.Errorf("download encrypted audio status %s", resp.Status)
+    }
+    encrypted, err := io.ReadAll(io.LimitReader(resp.Body, 80<<20))
+    if err != nil { return nil, err }
+    if len(encrypted) == 0 { return nil, fmt.Errorf("empty encrypted audio") }
+    decrypted, err := sodalib.DecryptAudio(encrypted, playAuth)
+    if err != nil || len(decrypted) == 0 {
+        return nil, fmt.Errorf("decrypt failed: %w", err)
+    }
+    _ = os.WriteFile(cacheFile, decrypted, 0644)
+    return decrypted, nil
+}
+
+func audioHTTPClient() *http.Client {
+    transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+    if p := firstNonEmpty(os.Getenv("UPSTREAM_PROXY"), os.Getenv("HTTPS_PROXY"), os.Getenv("HTTP_PROXY")); p != "" {
+        if u, err := url.Parse(p); err == nil {
+            transport.Proxy = http.ProxyURL(u)
+        }
+    }
+    return &http.Client{Timeout: 60 * time.Second, Transport: transport}
+}
+
+func proxyURLForRequest(r *http.Request, id string) string {
+    scheme := "http"
+    if r.TLS != nil { scheme = "https" }
+    if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" { scheme = proto }
+    return scheme + "://" + r.Host + "/api/proxy/audio/" + id
+}
+
+func ensureExtra(m map[string]interface{}) map[string]interface{} {
+    if m != nil { return m }
+    return map[string]interface{}{}
 }
 
 func (a *App) discoverPlaylists(w http.ResponseWriter, r *http.Request) {
