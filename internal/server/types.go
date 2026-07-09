@@ -63,4 +63,8 @@ type Upstream interface {
     Song(id string) (*Track, error)
 }
 
+type AudioResolver interface {
+    Audio(id string) (directURL string, playAuth string, err error)
+}
+
 func nowMS() int64 { return time.Now().UnixMilli() }
