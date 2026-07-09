@@ -29,6 +29,27 @@ $env:QISHUI_X_MEDUSA='...'
 $env:QISHUI_COOKIE='...'
 ```
 
+If the computer cannot directly access Qishui/Douyin CDN, route upstream requests through v2rayN or another local proxy:
+
+```powershell
+$env:UPSTREAM_PROXY='http://127.0.0.1:10808'
+.\mouyin-server-windows-amd64.exe
+```
+
+Audio playback is returned to the app as a local proxy URL:
+
+```text
+http://<server-host>:8000/api/proxy/audio/{track_id}
+```
+
+The proxy supports HTTP `Range` requests. If Qishui returns encrypted audio plus `play_auth`/`spade_a`, the server downloads the upstream m4a, decrypts it with `music-lib/soda.DecryptAudio`, caches it under `%TEMP%\mouyin-server-cache` by default, and serves the decrypted audio with `http.ServeContent`.
+
+Override cache directory:
+
+```powershell
+$env:MOUYIN_CACHE_DIR='D:\mouyin-cache'
+```
+
 ## Endpoints
 
 - `GET /api/health`
