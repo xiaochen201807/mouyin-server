@@ -36,6 +36,7 @@ func (a *App) Routes() http.Handler {
     mux.HandleFunc("/api/recommend/location", a.okPost)
     mux.HandleFunc("/api/song/", a.song)
     mux.HandleFunc("/api/proxy/audio/", a.proxyAudio)
+    mux.HandleFunc("/api/debug/song/", a.debugSong)
     mux.HandleFunc("/api/discover/playlists", a.discoverPlaylists)
     mux.HandleFunc("/api/playlist/", a.playlist)
     mux.HandleFunc("/api/mv/list", a.emptyList)
@@ -108,35 +109,52 @@ func (a *App) song(w http.ResponseWriter, r *http.Request) {
 func (a *App) proxyAudio(w http.ResponseWriter, r *http.Request) {
     id := strings.TrimPrefix(r.URL.Path, "/api/proxy/audio/")
     if id == "" { http.Error(w, "missing id", http.StatusBadRequest); return }
-    resolver, ok := a.upstream.(AudioResolver)
-    if !ok { http.Error(w, "audio resolver unsupported", http.StatusBadGateway); return }
-    directURL, playAuth, err := resolver.Audio(id)
-    if err != nil || directURL == "" {
+    sources, err := a.audioSources(id)
+    if err != nil || len(sources) == 0 {
         http.Error(w, "audio url unavailable", http.StatusBadGateway)
         return
     }
-    if playAuth != "" {
-        if data, err := cachedDecryptedAudio(r, id, directURL, playAuth); err == nil && len(data) > 0 {
-            w.Header().Set("Content-Type", "audio/mp4")
-            w.Header().Set("Accept-Ranges", "bytes")
-            w.Header().Set("Cache-Control", "public, max-age=3600")
-            http.ServeContent(w, r, id+".m4a", time.Now(), bytes.NewReader(data))
+
+    var lastErr error
+    for _, source := range sources {
+        if source.URL == "" { continue }
+        if source.PlayAuth != "" {
+            if data, err := cachedDecryptedAudio(r, id, source.URL, source.PlayAuth); err == nil && len(data) > 0 {
+                w.Header().Set("Content-Type", "audio/mp4")
+                w.Header().Set("Accept-Ranges", "bytes")
+                w.Header().Set("Cache-Control", "public, max-age=3600")
+                http.ServeContent(w, r, id+".m4a", time.Now(), bytes.NewReader(data))
+                return
+            } else {
+                lastErr = err
+                log.Printf("decrypt/cache audio failed for %s via %s: %v; trying next source", id, source.Label, err)
+            }
+        }
+        if err := a.transparentProxyAudio(w, r, source.URL); err == nil {
             return
         } else {
-            log.Printf("decrypt/cache audio failed for %s: %v; falling back to transparent proxy", id, err)
+            lastErr = err
+            log.Printf("transparent audio proxy failed for %s via %s: %v; trying next source", id, source.Label, err)
         }
     }
+    if lastErr != nil { http.Error(w, lastErr.Error(), http.StatusBadGateway); return }
+    http.Error(w, "audio proxy failed", http.StatusBadGateway)
+}
 
+func (a *App) transparentProxyAudio(w http.ResponseWriter, r *http.Request, directURL string) error {
     req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, directURL, nil)
-    if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+    if err != nil { return err }
     req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
     req.Header.Set("Accept", "*/*")
     if rng := r.Header.Get("Range"); rng != "" { req.Header.Set("Range", rng) }
     if ref := r.Header.Get("Referer"); ref != "" { req.Header.Set("Referer", ref) }
 
     resp, err := audioHTTPClient().Do(req)
-    if err != nil { http.Error(w, err.Error(), http.StatusBadGateway); return }
+    if err != nil { return err }
     defer resp.Body.Close()
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        return fmt.Errorf("upstream audio status %s", resp.Status)
+    }
 
     for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {
         if v := resp.Header.Get(h); v != "" { w.Header().Set(h, v) }
@@ -144,6 +162,37 @@ func (a *App) proxyAudio(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Cache-Control", "no-store")
     w.WriteHeader(resp.StatusCode)
     _, _ = io.Copy(w, resp.Body)
+    return nil
+}
+
+func (a *App) audioSources(id string) ([]AudioSource, error) {
+    if resolver, ok := a.upstream.(AudioCandidateResolver); ok {
+        sources, err := resolver.AudioCandidates(id)
+        if err == nil && len(sources) > 0 { return sources, nil }
+    }
+    resolver, ok := a.upstream.(AudioResolver)
+    if !ok { return nil, fmt.Errorf("audio resolver unsupported") }
+    directURL, playAuth, err := resolver.Audio(id)
+    if err != nil { return nil, err }
+    return []AudioSource{{URL: directURL, PlayAuth: playAuth, Label: "direct"}}, nil
+}
+
+func (a *App) debugSong(w http.ResponseWriter, r *http.Request) {
+    id := strings.TrimPrefix(r.URL.Path, "/api/debug/song/")
+    if id == "" { ok(w, map[string]string{"error":"missing id"}); return }
+    tr, songErr := a.upstream.Song(id)
+    sources, sourceErr := a.audioSources(id)
+    ok(w, map[string]interface{}{
+        "song": tr,
+        "sources": sources,
+        "song_error": errString(songErr),
+        "source_error": errString(sourceErr),
+    })
+}
+
+func errString(err error) string {
+    if err == nil { return "" }
+    return err.Error()
 }
 
 func cachedDecryptedAudio(r *http.Request, id, directURL, playAuth string) ([]byte, error) {
