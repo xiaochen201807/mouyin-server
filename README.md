@@ -75,6 +75,51 @@ Override cache directory:
 $env:MOUYIN_CACHE_DIR='D:\mouyin-cache'
 ```
 
+## Run with Docker Compose
+
+On a Linux server with Docker and Docker Compose:
+
+```bash
+git clone https://github.com/xiaochen201807/mouyin-server.git
+cd mouyin-server
+docker compose up -d --build
+```
+
+The service listens on:
+
+```text
+http://<server-ip>:8000/
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+Playback proxy check:
+
+```bash
+curl -I -H 'Range: bytes=0-1023' \
+  http://127.0.0.1:8000/api/proxy/audio/7146240707408168993
+```
+
+If the server also needs an upstream HTTP proxy, create `.env` before starting Compose:
+
+```bash
+UPSTREAM_PROXY=http://host.docker.internal:10808
+```
+
+`host.docker.internal` is mapped by `compose.yaml` to the Docker host gateway. Do not use `127.0.0.1` for a proxy running on the host, because inside the container `127.0.0.1` points to the container itself.
+
+Useful Compose commands:
+
+```bash
+docker compose logs -f
+docker compose restart
+docker compose down
+```
+
 ## Endpoints
 
 - `GET /api/health`
