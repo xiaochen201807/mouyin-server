@@ -20,6 +20,8 @@ import (
 
 type App struct{ upstream Upstream }
 
+const fallbackPlayableAudioID = "7146240707408168993"
+
 func New(upstream Upstream) *App { return &App{upstream: upstream} }
 
 func (a *App) Routes() http.Handler {
@@ -38,11 +40,12 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("/api/proxy/audio/", a.proxyAudio)
 	mux.HandleFunc("/api/debug/song/", a.debugSong)
 	mux.HandleFunc("/api/debug/proxy/", a.debugProxy)
+	mux.HandleFunc("/api/video/", a.videoDetail)
 	mux.HandleFunc("/api/discover/playlists", a.discoverPlaylists)
 	mux.HandleFunc("/api/playlist/", a.playlist)
-	mux.HandleFunc("/api/mv/list", a.emptyList)
-	mux.HandleFunc("/api/video_feed", a.emptyList)
-	mux.HandleFunc("/api/video_feed/pool", a.emptyList)
+	mux.HandleFunc("/api/mv/list", a.mvList)
+	mux.HandleFunc("/api/video_feed", a.videoFeed)
+	mux.HandleFunc("/api/video_feed/pool", a.videoFeed)
 	mux.HandleFunc("/account/me", a.accountMe)
 	mux.HandleFunc("/account/login_password", a.accountLogin)
 	mux.HandleFunc("/account/login_code", a.accountLogin)
@@ -113,6 +116,34 @@ func (a *App) recommend(w http.ResponseWriter, r *http.Request) {
 		hasMore = false
 	}
 	list(w, tracks, hasMore)
+}
+
+func (a *App) mvList(w http.ResponseWriter, r *http.Request) {
+	list(w, a.compatVideoTracks(r, "MV精选", 12), false)
+}
+
+func (a *App) videoFeed(w http.ResponseWriter, r *http.Request) {
+	count := atoiDefault(firstNonEmpty(r.URL.Query().Get("count"), "12"), 12)
+	list(w, a.compatVideoTracks(r, "华语热歌", count), false)
+}
+
+func (a *App) videoDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/video/")
+	if id == "" {
+		ok(w, nil)
+		return
+	}
+
+	audioID := videoAudioID(id)
+	tr, err := a.upstream.Song(audioID)
+	if err != nil || !trackHasPlayableDetail(tr) {
+		audioID = fallbackPlayableAudioID
+		tr, err = a.upstream.Song(audioID)
+		if err != nil || !trackHasPlayableDetail(tr) {
+			tr = fallbackVideoBase(audioID)
+		}
+	}
+	ok(w, videoTrackMap(r, id, tr))
 }
 
 func (a *App) song(w http.ResponseWriter, r *http.Request) {
@@ -383,6 +414,119 @@ func proxyURLForRequest(r *http.Request, id string) string {
 		scheme = proto
 	}
 	return scheme + "://" + r.Host + "/api/proxy/audio/" + id
+}
+
+func (a *App) compatVideoTracks(r *http.Request, keyword string, count int) []map[string]interface{} {
+	if count < 1 {
+		count = 12
+	}
+	if count > 20 {
+		count = 20
+	}
+	tracks, _, err := a.upstream.Search(keyword, 1, count)
+	if err != nil || len(tracks) == 0 {
+		tracks = mockTracks(keyword)
+	}
+	out := make([]map[string]interface{}, 0, len(tracks))
+	for _, tr := range tracks {
+		videoID := "v_" + tr.ID
+		out = append(out, videoTrackMap(r, videoID, &tr))
+	}
+	return out
+}
+
+func videoTrackMap(r *http.Request, id string, tr *Track) map[string]interface{} {
+	audioID := videoAudioID(id)
+	if tr == nil {
+		tr = fallbackVideoBase(audioID)
+	}
+	if tr.ID == "" {
+		tr.ID = audioID
+	}
+	playURL := proxyURLForRequest(r, tr.ID)
+	if strings.TrimSpace(tr.PlayURL) != "" && strings.Contains(tr.PlayURL, "/api/proxy/audio/") {
+		playURL = tr.PlayURL
+	}
+	title := firstNonEmpty(tr.Title, "Mouyin 视频")
+	artist := firstNonEmpty(tr.Artist, "Mouyin")
+	artists := tr.Artists
+	if len(artists) == 0 {
+		artists = []string{artist}
+	}
+	pic := firstNonEmpty(tr.Pic, tr.PicBG, "https://picsum.photos/seed/"+url.QueryEscape(id)+"/720/1280")
+	stats := tr.Stats
+	if stats == nil {
+		stats = map[string]int{"collect_count": 0, "comment_count": 0, "share_count": 0}
+	}
+	return map[string]interface{}{
+		"id":         id,
+		"title":      title,
+		"type":       "mv",
+		"media_kind": "mp4",
+		"media_type": "video",
+		"artist":     artist,
+		"artists":    artists,
+		"creator":    artist,
+		"album":      tr.Album,
+		"duration":   tr.Duration,
+		"pic":        pic,
+		"pic_bg":     pic,
+		"play_url":   playURL,
+		"audio_url":  playURL,
+		"playback_info": []map[string]interface{}{
+			{"quality": "low", "url": playURL, "bitrate": 64000},
+		},
+		"lyrics_lrc":  tr.LyricsLRC,
+		"lyrics_type": firstNonEmpty(tr.LyricsType, "lrc"),
+		"source":      "mouyin-local",
+		"stats":       stats,
+		"tags":        []string{"mouyin", "video"},
+		"description": firstNonEmpty(tr.Description, title),
+		"aweme_type":  0,
+		"width":       720,
+		"height":      1280,
+		"api_version": "compat-v1",
+		"cdn_urls":    []string{playURL},
+	}
+}
+
+func videoAudioID(id string) string {
+	id = strings.TrimSpace(id)
+	id = strings.TrimPrefix(id, "v_")
+	if id == "" {
+		return fallbackPlayableAudioID
+	}
+	return id
+}
+
+func trackHasPlayableDetail(tr *Track) bool {
+	if tr == nil {
+		return false
+	}
+	return strings.TrimSpace(tr.Title) != "" && (strings.TrimSpace(tr.PlayURL) != "" || strings.TrimSpace(tr.AudioURL) != "")
+}
+
+func fallbackVideoBase(id string) *Track {
+	if strings.TrimSpace(id) == "" {
+		id = fallbackPlayableAudioID
+	}
+	return &Track{
+		ID:          id,
+		Title:       "Mouyin 本地视频",
+		Type:        "audio",
+		MediaKind:   "audio",
+		Artist:      "Mouyin",
+		Artists:     []string{"Mouyin"},
+		Album:       "本地兼容",
+		Duration:    180000,
+		Pic:         "https://picsum.photos/seed/mouyin-video/720/1280",
+		PicBG:       "https://picsum.photos/seed/mouyin-video/720/1280",
+		LyricsType:  "lrc",
+		Source:      "mock",
+		Stats:       map[string]int{"collect_count": 0, "comment_count": 0, "share_count": 0},
+		Tags:        []string{"mock"},
+		Description: "本地兼容视频",
+	}
 }
 
 func ensureExtra(m map[string]interface{}) map[string]interface{} {
