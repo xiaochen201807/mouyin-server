@@ -103,7 +103,8 @@ func (c *Client) Song(id string) (*server.Track, error) {
     tr := c.trackFromTrackObj(trackObj)
     if tr.ID == "" { tr.ID = id }
     tr.LyricsLRC = lyricToLRC(str(firstPath(root, "lyric", "content")))
-    directURL, playAuth := c.extractPlayURL(root)
+    sources := c.extractAudioSources(root)
+    directURL, playAuth := firstAudioSource(sources)
     tr.PlayURL = directURL
     tr.AudioURL = directURL
     tr.Source = "qishui"
@@ -111,7 +112,7 @@ func (c *Client) Song(id string) (*server.Track, error) {
     tr.MediaKind = "audio"
     tr.Stats = map[string]int{"collect_count":0,"comment_count":0,"share_count":0}
     tr.Tags = []string{"qishui"}
-    tr.Extra = map[string]interface{}{"direct_url": directURL, "play_auth": playAuth}
+    tr.Extra = map[string]interface{}{"direct_url": directURL, "play_auth": playAuth, "audio_sources": sources}
     if cached, ok := c.getCache(id); ok {
         tr = mergeTrack(cached, tr)
     }
@@ -120,13 +121,23 @@ func (c *Client) Song(id string) (*server.Track, error) {
 }
 
 func (c *Client) Audio(id string) (string, string, error) {
-    tr, err := c.Song(id)
+    sources, err := c.AudioCandidates(id)
     if err != nil { return "", "", err }
+    if len(sources) == 0 { return "", "", errors.New("empty audio url") }
+    return sources[0].URL, sources[0].PlayAuth, nil
+}
+
+func (c *Client) AudioCandidates(id string) ([]server.AudioSource, error) {
+    tr, err := c.Song(id)
+    if err != nil { return nil, err }
+    if raw, ok := tr.Extra["audio_sources"].([]server.AudioSource); ok && len(raw) > 0 {
+        return raw, nil
+    }
     direct, _ := tr.Extra["direct_url"].(string)
     auth, _ := tr.Extra["play_auth"].(string)
     if direct == "" { direct = tr.AudioURL }
-    if direct == "" { return "", "", errors.New("empty audio url") }
-    return direct, auth, nil
+    if direct == "" { return nil, errors.New("empty audio url") }
+    return []server.AudioSource{{URL: direct, PlayAuth: auth, Label: "direct"}}, nil
 }
 
 func (c *Client) putCache(t server.Track) {
@@ -184,6 +195,11 @@ func (c *Client) trackFromTrackObj(track map[string]interface{}) server.Track {
 }
 
 func (c *Client) extractPlayURL(root map[string]interface{}) (string, string) {
+    return firstAudioSource(c.extractAudioSources(root))
+}
+
+func (c *Client) extractAudioSources(root map[string]interface{}) []server.AudioSource {
+    var sources []server.AudioSource
     for _, path := range [][]interface{}{{"track_player", "url_player_info"}, {"track_player", "video_model"}} {
         s := str(firstPath(root, path...))
         if s == "" { continue }
@@ -191,22 +207,47 @@ func (c *Client) extractPlayURL(root map[string]interface{}) (string, string) {
             var remote map[string]interface{}
             if err := c.getJSON(context.Background(), s, &remote); err == nil {
                 auth := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "PlayAuth"))
-                if u := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "MainPlayUrl")); u != "" { return u, auth }
-                if u := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "BackupPlayUrl")); u != "" { return u, auth }
+                if u := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "MainPlayUrl")); u != "" {
+                    sources = appendAudioSource(sources, server.AudioSource{URL: u, PlayAuth: auth, Label: "player_info_main"})
+                }
+                if u := str(firstPath(remote, "Result", "Data", "PlayInfoList", 0, "BackupPlayUrl")); u != "" {
+                    sources = appendAudioSource(sources, server.AudioSource{URL: u, PlayAuth: auth, Label: "player_info_backup"})
+                }
             }
             continue
         }
         var parsed map[string]interface{}
         if json.Unmarshal([]byte(s), &parsed) == nil {
             auth := str(firstPath(parsed, "video_list", 0, "encrypt_info", "spade_a"))
-            if u := str(firstPath(parsed, "video_list", 0, "main_url")); u != "" { return u, auth }
-            if u := str(firstPath(parsed, "video_list", 0, "backup_url")); u != "" { return u, auth }
+            if u := str(firstPath(parsed, "video_list", 0, "main_url")); u != "" {
+                sources = appendAudioSource(sources, server.AudioSource{URL: u, PlayAuth: auth, Label: "video_model_main"})
+            }
+            if u := str(firstPath(parsed, "video_list", 0, "backup_url")); u != "" {
+                sources = appendAudioSource(sources, server.AudioSource{URL: u, PlayAuth: auth, Label: "video_model_backup"})
+            }
             auth = str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "PlayAuth"))
-            if u := str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "MainPlayUrl")); u != "" { return u, auth }
-            if u := str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "BackupPlayUrl")); u != "" { return u, auth }
+            if u := str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "MainPlayUrl")); u != "" {
+                sources = appendAudioSource(sources, server.AudioSource{URL: u, PlayAuth: auth, Label: "embedded_player_main"})
+            }
+            if u := str(firstPath(parsed, "Result", "Data", "PlayInfoList", 0, "BackupPlayUrl")); u != "" {
+                sources = appendAudioSource(sources, server.AudioSource{URL: u, PlayAuth: auth, Label: "embedded_player_backup"})
+            }
         }
     }
-    return "", ""
+    return sources
+}
+
+func appendAudioSource(sources []server.AudioSource, src server.AudioSource) []server.AudioSource {
+    if src.URL == "" { return sources }
+    for _, existing := range sources {
+        if existing.URL == src.URL { return sources }
+    }
+    return append(sources, src)
+}
+
+func firstAudioSource(sources []server.AudioSource) (string, string) {
+    if len(sources) == 0 { return "", "" }
+    return sources[0].URL, sources[0].PlayAuth
 }
 
 func (c *Client) getJSON(ctx context.Context, endpoint string, out interface{}) error {
