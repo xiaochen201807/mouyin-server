@@ -193,7 +193,15 @@ func (a *App) song(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("direct") != "1" && tr.AudioURL != "" {
 		proxyURL := proxyURLForRequest(r, id)
 		tr.Extra = ensureExtra(tr.Extra)
-		tr.Extra["direct_url"] = tr.AudioURL
+		// Do not expose the upstream direct URL in the normal song response.
+		// Some app builds prefer extra.direct_url over play_url/audio_url; if that
+		// field contains an upstream preview URL, playback bypasses our proxy and
+		// server logs never see /api/proxy/audio/{id}. Point every public playback
+		// field at the local proxy so the proxy can resolve the current full source.
+		if os.Getenv("MOUYIN_EXPOSE_DIRECT_URL") == "1" {
+			tr.Extra["upstream_direct_url"] = tr.AudioURL
+		}
+		tr.Extra["direct_url"] = proxyURL
 		tr.PlayURL = proxyURL
 		tr.AudioURL = proxyURL
 	}
