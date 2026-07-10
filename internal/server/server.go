@@ -29,6 +29,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("/api/health", a.health)
 	mux.HandleFunc("/api/app/version", a.version)
 	mux.HandleFunc("/api/splash", a.splash)
+	mux.HandleFunc("/api/genres/preference", a.genrePreference)
 	mux.HandleFunc("/api/genres", a.genres)
 	mux.HandleFunc("/api/listen_mode/modes", a.listenModes)
 	mux.HandleFunc("/api/search", a.search)
@@ -94,7 +95,19 @@ func (a *App) splash(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]interface{}{"enabled": false, "items": []interface{}{}})
 }
 func (a *App) genres(w http.ResponseWriter, r *http.Request) {
-	ok(w, []map[string]string{{"id": "cn", "name": "华语"}, {"id": "pop", "name": "流行"}, {"id": "hot", "name": "热歌"}, {"id": "en", "name": "英文"}})
+	ok(w, genreItems())
+}
+func (a *App) genrePreference(w http.ResponseWriter, r *http.Request) {
+	selected := []string{"cn", "pop"}
+	if r.Method == http.MethodPost {
+		var req struct {
+			Genres []string `json:"genres"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && len(req.Genres) > 0 {
+			selected = compactGenreKeys(req.Genres)
+		}
+	}
+	ok(w, map[string]interface{}{"genres": selected, "names": genreNames(selected), "source": "server"})
 }
 func (a *App) listenModes(w http.ResponseWriter, r *http.Request) {
 	ok(w, []map[string]string{{"id": "normal", "name": "默认模式"}, {"id": "focus", "name": "专注模式"}})
@@ -840,10 +853,79 @@ func adminUser() map[string]interface{} {
 		"username":       "admin",
 		"nickname":       "Admin",
 		"avatar":         "",
-		"qishui_user_id": "",
+		"qishui_user_id": "admin",
 		"created_at":     0,
 		"vip":            true,
 	}
+}
+
+func genreItems() []map[string]interface{} {
+	return []map[string]interface{}{
+		{
+			"key":       "cn",
+			"id":        "cn",
+			"name":      "华语",
+			"count":     0,
+			"covers":    []string{},
+			"subgenres": []interface{}{},
+		},
+		{
+			"key":       "pop",
+			"id":        "pop",
+			"name":      "流行",
+			"count":     0,
+			"covers":    []string{},
+			"subgenres": []interface{}{},
+		},
+		{
+			"key":       "hot",
+			"id":        "hot",
+			"name":      "热歌",
+			"count":     0,
+			"covers":    []string{},
+			"subgenres": []interface{}{},
+		},
+		{
+			"key":       "en",
+			"id":        "en",
+			"name":      "英文",
+			"count":     0,
+			"covers":    []string{},
+			"subgenres": []interface{}{},
+		},
+	}
+}
+
+func compactGenreKeys(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out
+}
+
+func genreNames(keys []string) []string {
+	namesByKey := make(map[string]string)
+	for _, item := range genreItems() {
+		key, _ := item["key"].(string)
+		name, _ := item["name"].(string)
+		if key != "" {
+			namesByKey[key] = name
+		}
+	}
+	names := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if name := namesByKey[key]; name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func atoiDefault(s string, def int) int {
