@@ -103,6 +103,7 @@ services:
     environment:
       ADDR: ":8000"
       MOUYIN_CACHE_DIR: "/var/cache/mouyin"
+      MOUYIN_VIDEO_SOURCE_URL: "${MOUYIN_VIDEO_SOURCE_URL:-}"
       UPSTREAM_PROXY: "${UPSTREAM_PROXY:-}"
       TZ: "Asia/Shanghai"
     volumes:
@@ -133,6 +134,15 @@ Playback proxy check:
 curl -I -H 'Range: bytes=0-1023' \
   http://127.0.0.1:8000/api/proxy/audio/7146240707408168993
 ```
+
+MV video proxy check:
+
+```bash
+curl -I -H 'Range: bytes=0-1023' \
+  http://127.0.0.1:8000/api/proxy/video/v_test
+```
+
+`MOUYIN_VIDEO_SOURCE_URL` is optional. When unset, the server proxies a small default MP4 sample for MV playback compatibility. Set it to your own MP4 endpoint when you have a real upstream video source.
 
 If the server also needs an upstream HTTP proxy, create `.env` before starting Compose:
 

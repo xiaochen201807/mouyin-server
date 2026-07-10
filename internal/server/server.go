@@ -38,6 +38,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("/api/recommend/location", a.okPost)
 	mux.HandleFunc("/api/song/", a.song)
 	mux.HandleFunc("/api/proxy/audio/", a.proxyAudio)
+	mux.HandleFunc("/api/proxy/video/", a.proxyVideo)
 	mux.HandleFunc("/api/debug/song/", a.debugSong)
 	mux.HandleFunc("/api/debug/proxy/", a.debugProxy)
 	mux.HandleFunc("/api/video/", a.videoDetail)
@@ -208,6 +209,59 @@ func (a *App) proxyAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "audio proxy failed", http.StatusBadGateway)
+}
+
+func (a *App) proxyVideo(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/proxy/video/")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	if err := a.transparentProxyVideo(w, r, videoSourceURL()); err != nil {
+		log.Printf("transparent video proxy failed for %s: %v", id, err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+	}
+}
+
+func (a *App) transparentProxyVideo(w http.ResponseWriter, r *http.Request, directURL string) error {
+	if strings.TrimSpace(directURL) == "" {
+		return fmt.Errorf("video source url unavailable")
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, directURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+	req.Header.Set("Accept", "video/mp4,video/*,*/*")
+	if rng := r.Header.Get("Range"); rng != "" {
+		req.Header.Set("Range", rng)
+	}
+	if ref := r.Header.Get("Referer"); ref != "" {
+		req.Header.Set("Referer", ref)
+	}
+
+	resp, err := audioHTTPClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("upstream video status %s", resp.Status)
+	}
+
+	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {
+		if v := resp.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
+		}
+	}
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "video/mp4")
+	}
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+	return nil
 }
 
 func (a *App) transparentProxyAudio(w http.ResponseWriter, r *http.Request, directURL string) error {
@@ -406,6 +460,14 @@ func audioHTTPClient() *http.Client {
 }
 
 func proxyURLForRequest(r *http.Request, id string) string {
+	return mediaProxyURLForRequest(r, "audio", id)
+}
+
+func videoProxyURLForRequest(r *http.Request, id string) string {
+	return mediaProxyURLForRequest(r, "video", id)
+}
+
+func mediaProxyURLForRequest(r *http.Request, kind, id string) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -413,7 +475,14 @@ func proxyURLForRequest(r *http.Request, id string) string {
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
 		scheme = proto
 	}
-	return scheme + "://" + r.Host + "/api/proxy/audio/" + id
+	return scheme + "://" + r.Host + "/api/proxy/" + kind + "/" + id
+}
+
+func videoSourceURL() string {
+	return firstNonEmpty(
+		os.Getenv("MOUYIN_VIDEO_SOURCE_URL"),
+		"https://www.w3schools.com/html/mov_bbb.mp4",
+	)
 }
 
 func (a *App) compatVideoTracks(r *http.Request, keyword string, count int) []map[string]interface{} {
@@ -443,9 +512,10 @@ func videoTrackMap(r *http.Request, id string, tr *Track) map[string]interface{}
 	if tr.ID == "" {
 		tr.ID = audioID
 	}
-	playURL := proxyURLForRequest(r, tr.ID)
+	videoURL := videoProxyURLForRequest(r, id)
+	audioURL := proxyURLForRequest(r, tr.ID)
 	if strings.TrimSpace(tr.PlayURL) != "" && strings.Contains(tr.PlayURL, "/api/proxy/audio/") {
-		playURL = tr.PlayURL
+		audioURL = tr.PlayURL
 	}
 	title := firstNonEmpty(tr.Title, "Mouyin 视频")
 	artist := firstNonEmpty(tr.Artist, "Mouyin")
@@ -471,10 +541,10 @@ func videoTrackMap(r *http.Request, id string, tr *Track) map[string]interface{}
 		"duration":   tr.Duration,
 		"pic":        pic,
 		"pic_bg":     pic,
-		"play_url":   playURL,
-		"audio_url":  playURL,
+		"play_url":   videoURL,
+		"audio_url":  audioURL,
 		"playback_info": []map[string]interface{}{
-			{"quality": "low", "url": playURL, "bitrate": 64000},
+			{"quality": "low", "url": videoURL, "bitrate": 64000},
 		},
 		"lyrics_lrc":  tr.LyricsLRC,
 		"lyrics_type": firstNonEmpty(tr.LyricsType, "lrc"),
@@ -486,7 +556,7 @@ func videoTrackMap(r *http.Request, id string, tr *Track) map[string]interface{}
 		"width":       720,
 		"height":      1280,
 		"api_version": "compat-v1",
-		"cdn_urls":    []string{playURL},
+		"cdn_urls":    []string{videoURL},
 	}
 }
 

@@ -8,6 +8,7 @@ services:
     environment:
       ADDR: ":8000"
       MOUYIN_CACHE_DIR: "/var/cache/mouyin"
+      MOUYIN_VIDEO_SOURCE_URL: "${MOUYIN_VIDEO_SOURCE_URL:-}"
       UPSTREAM_PROXY: "${UPSTREAM_PROXY:-}"
       QISHUI_X_HELIOS: "${QISHUI_X_HELIOS:-}"
       QISHUI_X_MEDUSA: "${QISHUI_X_MEDUSA:-}"
