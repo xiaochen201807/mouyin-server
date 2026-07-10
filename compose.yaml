@@ -1,9 +1,6 @@
 services:
   mouyin-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: mouyin-server:local
+    image: ghcr.io/xiaochen201807/mouyin-server:latest
     container_name: mouyin-server
     restart: unless-stopped
     ports:
