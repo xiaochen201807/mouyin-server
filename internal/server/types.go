@@ -1,6 +1,9 @@
 package server
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type BaseResponse struct {
 	Code      int         `json:"code"`
@@ -101,5 +104,7 @@ type AudioProbe struct {
 type AudioCandidateResolver interface {
 	AudioCandidates(id string) ([]AudioSource, error)
 }
+
+var ErrAudioUnavailable = errors.New("audio url unavailable")
 
 func nowMS() int64 { return time.Now().UnixMilli() }

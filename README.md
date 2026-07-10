@@ -29,6 +29,20 @@ $env:QISHUI_X_MEDUSA='...'
 $env:QISHUI_COOKIE='...'
 ```
 
+Playback is hybrid by default:
+
+- `/api/search` and recommendation/search-like list data use the local Qishui/Soda provider so the patched APK can search normally.
+- `/api/song/{id}` and `/api/proxy/audio/{id}` first ask the original Mouyin service for playable full-track URLs, then fall back to Qishui if the original service is unavailable.
+
+Original Mouyin playback upstream can be overridden:
+
+```powershell
+$env:MOUYIN_ORIGIN_BASE_URL='http://39.104.86.142:5050/'
+$env:MOUYIN_ORIGIN_VERSION='151'
+$env:MOUYIN_ORIGIN_APP_VERSION='1.6.1'
+$env:MOUYIN_ORIGIN_SECRET='...'
+```
+
 If the computer cannot directly access Qishui/Douyin CDN, route upstream requests through v2rayN or another local proxy:
 
 ```powershell
@@ -104,6 +118,10 @@ services:
       ADDR: ":8000"
       MOUYIN_CACHE_DIR: "/var/cache/mouyin"
       MOUYIN_VIDEO_SOURCE_URL: "${MOUYIN_VIDEO_SOURCE_URL:-}"
+      MOUYIN_ORIGIN_BASE_URL: "${MOUYIN_ORIGIN_BASE_URL:-http://39.104.86.142:5050/}"
+      MOUYIN_ORIGIN_VERSION: "${MOUYIN_ORIGIN_VERSION:-151}"
+      MOUYIN_ORIGIN_APP_VERSION: "${MOUYIN_ORIGIN_APP_VERSION:-1.6.1}"
+      MOUYIN_ORIGIN_SECRET: "${MOUYIN_ORIGIN_SECRET:-}"
       UPSTREAM_PROXY: "${UPSTREAM_PROXY:-}"
       TZ: "Asia/Shanghai"
     volumes:
