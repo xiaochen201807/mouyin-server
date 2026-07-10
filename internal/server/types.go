@@ -67,4 +67,14 @@ type AudioResolver interface {
     Audio(id string) (directURL string, playAuth string, err error)
 }
 
+type AudioSource struct {
+    URL      string `json:"url"`
+    PlayAuth string `json:"play_auth,omitempty"`
+    Label    string `json:"label,omitempty"`
+}
+
+type AudioCandidateResolver interface {
+    AudioCandidates(id string) ([]AudioSource, error)
+}
+
 func nowMS() int64 { return time.Now().UnixMilli() }
