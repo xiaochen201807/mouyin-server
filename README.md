@@ -77,15 +77,45 @@ $env:MOUYIN_CACHE_DIR='D:\mouyin-cache'
 
 ## Run with Docker Compose
 
-On a Linux server with Docker and Docker Compose:
+The published Docker image is:
 
-```bash
-git clone https://github.com/xiaochen201807/mouyin-server.git
-cd mouyin-server
-docker compose up -d --build
+```text
+ghcr.io/xiaochen201807/mouyin-server:latest
 ```
 
-The service listens on:
+Because this GitHub repository is private, pull it from the server after logging in to GHCR:
+
+```bash
+echo '<github_pat_or_token>' | docker login ghcr.io -u xiaochen201807 --password-stdin
+docker pull ghcr.io/xiaochen201807/mouyin-server:latest
+```
+
+Create `compose.yaml` on the server:
+
+```yaml
+services:
+  mouyin-server:
+    image: ghcr.io/xiaochen201807/mouyin-server:latest
+    container_name: mouyin-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ADDR: ":8000"
+      MOUYIN_CACHE_DIR: "/var/cache/mouyin"
+      UPSTREAM_PROXY: "${UPSTREAM_PROXY:-}"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./data/cache:/var/cache/mouyin
+```
+
+Start it:
+
+```bash
+docker compose up -d
+```
+
+The service listens on the server at:
 
 ```text
 http://<server-ip>:8000/
@@ -111,6 +141,14 @@ UPSTREAM_PROXY=http://host.docker.internal:10808
 ```
 
 `host.docker.internal` is mapped by `compose.yaml` to the Docker host gateway. Do not use `127.0.0.1` for a proxy running on the host, because inside the container `127.0.0.1` points to the container itself.
+
+If you want to build from source instead of pulling GHCR:
+
+```bash
+git clone https://github.com/xiaochen201807/mouyin-server.git
+cd mouyin-server
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
 
 Useful Compose commands:
 
