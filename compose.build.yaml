@@ -1,0 +1,6 @@
+services:
+  mouyin-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mouyin-server:local
