@@ -44,6 +44,19 @@ http://<server-host>:8000/api/proxy/audio/{track_id}
 
 The proxy supports HTTP `Range` requests. If Qishui returns encrypted audio plus `play_auth`/`spade_a`, the server downloads the upstream m4a, decrypts it with `music-lib/soda.DecryptAudio`, caches it under `%TEMP%\mouyin-server-cache` by default, and serves the decrypted audio with `http.ServeContent`.
 
+The proxy tries multiple upstream candidates when available:
+
+- `url_player_info` main URL
+- `url_player_info` backup URL
+- `video_model` main URL
+- `video_model` backup URL
+
+Debug a track and its candidate audio URLs:
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:8000/api/debug/song/7146240707408168993'
+```
+
 Override cache directory:
 
 ```powershell
