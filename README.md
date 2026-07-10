@@ -57,6 +57,18 @@ Debug a track and its candidate audio URLs:
 Invoke-RestMethod 'http://127.0.0.1:8000/api/debug/song/7146240707408168993'
 ```
 
+Probe each candidate audio URL with `Range: bytes=0-1023`:
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:8000/api/debug/proxy/7146240707408168993'
+```
+
+Also verify full encrypted-audio download, decrypt, and cache:
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:8000/api/debug/proxy/7146240707408168993?decrypt=1'
+```
+
 Override cache directory:
 
 ```powershell
@@ -73,6 +85,9 @@ $env:MOUYIN_CACHE_DIR='D:\mouyin-cache'
 - `GET /api/search?keyword=周杰伦&page=1&page_size=20`
 - `GET /api/recommend`
 - `GET /api/song/{id}`
+- `GET /api/proxy/audio/{id}`
+- `GET /api/debug/song/{id}`
+- `GET /api/debug/proxy/{id}`
 - `GET /api/discover/playlists`
 - `GET /api/playlist/{id}`
 - `GET /api/mv/list`
