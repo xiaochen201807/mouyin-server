@@ -1,0 +1,28 @@
+services:
+  mouyin-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mouyin-server:local
+    container_name: mouyin-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ADDR: ":8000"
+      MOUYIN_CACHE_DIR: "/var/cache/mouyin"
+      UPSTREAM_PROXY: "${UPSTREAM_PROXY:-}"
+      QISHUI_X_HELIOS: "${QISHUI_X_HELIOS:-}"
+      QISHUI_X_MEDUSA: "${QISHUI_X_MEDUSA:-}"
+      QISHUI_COOKIE: "${QISHUI_COOKIE:-}"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./data/cache:/var/cache/mouyin
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
