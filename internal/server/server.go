@@ -50,6 +50,12 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("/account/me", a.accountMe)
 	mux.HandleFunc("/account/login_password", a.accountLogin)
 	mux.HandleFunc("/account/login_code", a.accountLogin)
+	mux.HandleFunc("/account/likes", a.accountLikes)
+	mux.HandleFunc("/account/dislikes", a.accountDislikes)
+	mux.HandleFunc("/account/like", a.okPost)
+	mux.HandleFunc("/account/unlike", a.okPost)
+	mux.HandleFunc("/account/dislike", a.okPost)
+	mux.HandleFunc("/account/undislike", a.okPost)
 	return withMiddleware(mux)
 }
 
@@ -815,12 +821,29 @@ func (a *App) playlist(w http.ResponseWriter, r *http.Request) {
 	ok(w, PlaylistDetail{ID: id, PlaylistID: id, Title: keyword, OwnerName: "Mouyin Local", Desc: "本地兼容歌单", TrackCount: len(tracks), Tracks: tracks, HasMore: false, NextCursor: 0})
 }
 
-func (a *App) accountMe(w http.ResponseWriter, r *http.Request) { ok(w, adminUser()) }
+func (a *App) accountMe(w http.ResponseWriter, r *http.Request) {
+	ok(w, map[string]interface{}{"user": adminUser()})
+}
 func (a *App) accountLogin(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]interface{}{"token": "mock-admin-token", "user": adminUser()})
 }
+func (a *App) accountLikes(w http.ResponseWriter, r *http.Request) {
+	ok(w, map[string]interface{}{"ids": []string{}, "tracks": []Track{}})
+}
+func (a *App) accountDislikes(w http.ResponseWriter, r *http.Request) {
+	ok(w, map[string]interface{}{"ids": []string{}})
+}
 func adminUser() map[string]interface{} {
-	return map[string]interface{}{"id": "admin", "username": "admin", "nickname": "Admin", "avatar": "", "vip": true}
+	return map[string]interface{}{
+		"id":             "admin",
+		"email":          "admin@mouyin.local",
+		"username":       "admin",
+		"nickname":       "Admin",
+		"avatar":         "",
+		"qishui_user_id": "",
+		"created_at":     0,
+		"vip":            true,
+	}
 }
 
 func atoiDefault(s string, def int) int {
