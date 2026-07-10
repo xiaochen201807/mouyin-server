@@ -98,14 +98,46 @@ func (a *App) emptyList(w http.ResponseWriter, r *http.Request) { list(w, []inte
 
 func (a *App) search(w http.ResponseWriter, r *http.Request) {
 	keyword := firstNonEmpty(r.URL.Query().Get("keyword"), r.URL.Query().Get("q"), "华语热歌")
-	page := atoiDefault(firstNonEmpty(r.URL.Query().Get("page"), "1"), 1)
-	size := atoiDefault(firstNonEmpty(r.URL.Query().Get("page_size"), r.URL.Query().Get("limit"), "20"), 20)
+	searchType := normalizeSearchType(r.URL.Query().Get("search_type"))
+	page := atoiDefault(firstNonEmpty(r.URL.Query().Get("cursor"), r.URL.Query().Get("page"), "1"), 1)
+	size := atoiDefault(firstNonEmpty(r.URL.Query().Get("count"), r.URL.Query().Get("page_size"), r.URL.Query().Get("limit"), "20"), 20)
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 20
+	}
+	var items interface{}
+	var hasMore bool
 	tracks, hasMore, err := a.upstream.Search(keyword, page, size)
 	if err != nil || len(tracks) == 0 {
 		tracks = mockTracks(keyword)
 		hasMore = false
 	}
-	list(w, tracks, hasMore)
+	if len(tracks) > size {
+		tracks = tracks[:size]
+	}
+	switch searchType {
+	case "video":
+		items = a.compatVideoTracks(r, keyword, size)
+		hasMore = false
+	case "artist":
+		items = searchArtistItems(keyword, tracks, size)
+		hasMore = false
+	case "album":
+		items = searchAlbumItems(keyword, tracks, size)
+		hasMore = false
+	case "playlist":
+		items = searchPlaylistItems(keyword, tracks, size)
+		hasMore = false
+	default:
+		items = tracks
+	}
+	nextCursor := ""
+	if hasMore {
+		nextCursor = strconv.Itoa(page + 1)
+	}
+	ok(w, SearchData{Items: items, HasMore: hasMore, Cursor: nextCursor})
 }
 
 func (a *App) recommend(w http.ResponseWriter, r *http.Request) {
@@ -485,6 +517,150 @@ func videoSourceURL() string {
 	)
 }
 
+func normalizeSearchType(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "all", "综合":
+		return "all"
+	case "track", "song", "歌曲":
+		return "track"
+	case "video", "mv", "视频":
+		return "video"
+	case "artist", "user", "音乐人", "歌手":
+		return "artist"
+	case "album", "专辑":
+		return "album"
+	case "playlist", "歌单":
+		return "playlist"
+	default:
+		return "track"
+	}
+}
+
+func searchArtistItems(keyword string, tracks []Track, limit int) []Track {
+	seen := map[string]bool{}
+	items := make([]Track, 0, limit)
+	for _, tr := range tracks {
+		names := tr.Artists
+		if len(names) == 0 && strings.TrimSpace(tr.Artist) != "" {
+			names = []string{tr.Artist}
+		}
+		for _, name := range names {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			items = append(items, Track{
+				ID:          "artist_" + stableID(name),
+				Title:       name,
+				Type:        "artist",
+				MediaKind:   "artist",
+				Artist:      name,
+				Artists:     []string{name},
+				Album:       "音乐人",
+				Duration:    0,
+				Pic:         firstNonEmpty(tr.Pic, tr.PicBG, "https://picsum.photos/seed/artist-"+url.QueryEscape(name)+"/512/512"),
+				PicBG:       firstNonEmpty(tr.PicBG, tr.Pic, "https://picsum.photos/seed/artist-"+url.QueryEscape(name)+"/512/512"),
+				LyricsType:  "lrc",
+				Source:      "mouyin-local",
+				Stats:       map[string]int{"collect_count": 0, "comment_count": 0, "share_count": 0},
+				Tags:        []string{"artist", keyword},
+				Description: "由搜索结果聚合的音乐人",
+			})
+			if len(items) >= limit {
+				return items
+			}
+		}
+	}
+	return items
+}
+
+func searchAlbumItems(keyword string, tracks []Track, limit int) []Track {
+	seen := map[string]bool{}
+	items := make([]Track, 0, limit)
+	for _, tr := range tracks {
+		album := strings.TrimSpace(tr.Album)
+		if album == "" || seen[album] {
+			continue
+		}
+		seen[album] = true
+		artist := firstNonEmpty(tr.Artist, strings.Join(tr.Artists, "/"), "未知音乐人")
+		items = append(items, Track{
+			ID:          "album_" + stableID(album+"_"+artist),
+			Title:       album,
+			Type:        "album",
+			MediaKind:   "album",
+			Artist:      artist,
+			Artists:     []string{artist},
+			Album:       album,
+			Duration:    tr.Duration,
+			Pic:         firstNonEmpty(tr.Pic, tr.PicBG, "https://picsum.photos/seed/album-"+url.QueryEscape(album)+"/512/512"),
+			PicBG:       firstNonEmpty(tr.PicBG, tr.Pic, "https://picsum.photos/seed/album-"+url.QueryEscape(album)+"/512/512"),
+			LyricsType:  "lrc",
+			Source:      "mouyin-local",
+			Stats:       map[string]int{"collect_count": 0, "comment_count": 0, "share_count": 0},
+			Tags:        []string{"album", keyword},
+			Description: "由搜索结果聚合的专辑",
+		})
+		if len(items) >= limit {
+			return items
+		}
+	}
+	return items
+}
+
+func searchPlaylistItems(keyword string, tracks []Track, limit int) []Track {
+	if limit < 1 {
+		limit = 1
+	}
+	covers := []string{
+		"https://picsum.photos/seed/playlist-" + url.QueryEscape(keyword) + "-1/512/512",
+		"https://picsum.photos/seed/playlist-" + url.QueryEscape(keyword) + "-2/512/512",
+		"https://picsum.photos/seed/playlist-" + url.QueryEscape(keyword) + "-3/512/512",
+	}
+	titles := []string{keyword + "精选", keyword + "热歌", keyword + "推荐歌单"}
+	items := make([]Track, 0, minInt(limit, len(titles)))
+	for i, title := range titles {
+		pic := covers[i%len(covers)]
+		if i < len(tracks) {
+			pic = firstNonEmpty(tracks[i].Pic, tracks[i].PicBG, pic)
+		}
+		items = append(items, Track{
+			ID:          "playlist_" + stableID(title),
+			Title:       title,
+			Type:        "playlist",
+			MediaKind:   "playlist",
+			Artist:      "Mouyin Local",
+			Artists:     []string{"Mouyin Local"},
+			Album:       "歌单",
+			Duration:    0,
+			Pic:         pic,
+			PicBG:       pic,
+			LyricsType:  "lrc",
+			Source:      "mouyin-local",
+			Stats:       map[string]int{"collect_count": len(tracks), "comment_count": 0, "share_count": 0},
+			Tags:        []string{"playlist", keyword},
+			Description: "本地兼容歌单",
+		})
+		if len(items) >= limit {
+			break
+		}
+	}
+	return items
+}
+
+func stableID(v string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(v)))
+	return fmt.Sprintf("%x", sum[:6])
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (a *App) compatVideoTracks(r *http.Request, keyword string, count int) []map[string]interface{} {
 	if count < 1 {
 		count = 12
@@ -495,6 +671,9 @@ func (a *App) compatVideoTracks(r *http.Request, keyword string, count int) []ma
 	tracks, _, err := a.upstream.Search(keyword, 1, count)
 	if err != nil || len(tracks) == 0 {
 		tracks = mockTracks(keyword)
+	}
+	if len(tracks) > count {
+		tracks = tracks[:count]
 	}
 	out := make([]map[string]interface{}, 0, len(tracks))
 	for _, tr := range tracks {

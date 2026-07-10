@@ -17,6 +17,12 @@ type ListResponse struct {
 	Timestamp int64       `json:"timestamp"`
 }
 
+type SearchData struct {
+	Items   interface{} `json:"items"`
+	HasMore bool        `json:"has_more"`
+	Cursor  string      `json:"cursor"`
+}
+
 type Track struct {
 	ID          string                 `json:"id"`
 	Title       string                 `json:"title"`
